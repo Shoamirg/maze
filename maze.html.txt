@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Maze</title>
+        <link rel="stylesheet" href="maze.css">
+    </head>
+    
+    <body>
+  <div id="menu-button" onclick="toggleMenu()">⦁⦁⦁</div>
+  <div id="theme-menu">
+    <button onclick="showSetup()" class="menu">Back to Main</button>
+    <button onclick="setTheme('dark')" class="menu">Dark Theme</button>
+    <button onclick="setTheme('light')" class="menu">Light Theme</button>
+    <button onclick="setTheme('matrix')" class="menu">Matrix Theme</button>
+  </div>
+
+  <div id="setup">
+    <h1 id="title">Maze</h1>
+    <label>Width (squares): <input id="widthSlider" type="range" min="5" max="50" value="20"></label>
+    <span id="widthValue">20</span>
+    <label>Height (squares): <input id="heightSlider" type="range" min="5" max="50" value="20"></label>
+    <span id="heightValue">20</span>
+    <label>Animation:
+      <select id="animate">
+        <option value="true">Animated</option>
+        <option value="false">Instant</option>
+      </select>
+    </label>
+    <button onclick="startMaze()" style="color: black;">Start Generate Maze</button>
+  </div>
+  
+  <div id="reset">
+      <button onclick="resetMaze()" class="menu">Reset</button>
+  </div>
+
+  <div id="maze-container">
+    <canvas id="maze"></canvas>
+  </div>
+
+  <div id="controls">
+    <div class="arrow-buttons">
+      <button onclick="move('w')" class="menu">↑</button>
+      <div class="arrow-buttons-row">
+        <button onclick="move('a')" class="menu">←</button>
+        <button onclick="move('s')" class="menu">↓</button>
+        <button onclick="move('d')" class="menu">→</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    alert("works best on computer...");
+    const canvas = document.getElementById('maze');
+    const ctx = canvas.getContext('2d');
+    let cols, rows, cellSize = 25;
+    let grid = [], stack = [], current, exitCell;
+    let player = { x: 0, y: 0, px: 0, py: 0 };
+    let generating = false;
+    const keys = { w: false, a: false, s: false, d: false };
+    let lastTime = 0;
+    const movementSpeed = 0.1;
+    let animationFrameId = null;
+    let lastValidCellSize = 25;
+
+    document.addEventListener('keydown', e => {
+      const key = e.key.toLowerCase();
+      if (keys.hasOwnProperty(key)) keys[key] = true;
+    });
+
+    document.addEventListener('keyup', e => {
+      const key = e.key.toLowerCase();
+      if (keys.hasOwnProperty(key)) keys[key] = false;
+    });
+
+    function updatePlayerSmooth(timestamp) {
+      if (!lastTime) lastTime = timestamp;
+      const deltaTime = timestamp - lastTime;
+      lastTime = timestamp;
+
+      const targetX = player.x * lastValidCellSize + lastValidCellSize/2;
+      const targetY = player.y * lastValidCellSize + lastValidCellSize/2;
+  
+      player.px += (targetX - player.px) * 0.2 * (deltaTime / 16.67);
+      player.py += (targetY - player.py) * 0.2 * (deltaTime / 16.67);
+
+      drawGrid();
+      drawExit();
+      drawPlayer();
+
+      animationFrameId = requestAnimationFrame(updatePlayerSmooth);
+    }
+
+    function handleContinuousMovement() {
+      const speed = 0.15;
+      const dirMap = {
+        w: [0, -1, 0], 
+        d: [1, 0, 1], 
+        s: [0, 1, 2], 
+        a: [-1, 0, 3]
+      };
+
+      Object.entries(keys).forEach(([key, pressed]) => {
+        if (pressed) {
+          const [dx, dy, wallIndex] = dirMap[key];
+          const cell = grid[index(player.x, player.y)];
+      
+          if (cell && !cell.walls[wallIndex]) {
+            player.x += dx * speed;
+            player.y += dy * speed;
+        
+            player.x = Math.max(0, Math.min(cols - 1, player.x));
+            player.y = Math.max(0, Math.min(rows - 1, player.y));
+          }
+        }
+      });
+    }
+
+    function resizeCanvasToFit(width, height) {
+      cellSize = 25;
+      const margin = 50;
+      let totalWidth = width * cellSize;
+      let totalHeight = height * cellSize;
+      const scaleW = (window.innerWidth - margin) / totalWidth;
+      const scaleH = (window.innerHeight - margin - 100) / totalHeight;
+      const scale = Math.min(scaleW, scaleH);
+      cellSize = Math.floor(25 * scale);
+      canvas.width = cellSize * width;
+      canvas.height = cellSize * height;
+    }
+
+    class Cell {
+      constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.walls = [true, true, true, true];
+        this.visited = false;
+      }
+      draw() {
+        const x = this.x * cellSize;
+        const y = this.y * cellSize;
+        ctx.strokeStyle = '#aaa';
+        ctx.lineWidth = 2;
+        if (this.walls[0]) drawLine(x, y, x + cellSize, y);
+        if (this.walls[1]) drawLine(x + cellSize, y, x + cellSize, y + cellSize);
+        if (this.walls[2]) drawLine(x + cellSize, y + cellSize, x, y + cellSize);
+        if (this.walls[3]) drawLine(x, y + cellSize, x, y);
+      }
+    }
+
+    function drawLine(x1, y1, x2, y2) {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+
+    function index(x, y) {
+      return x < 0 || y < 0 || x >= cols || y >= rows ? -1 : x + y * cols;
+    }
+
+    function getNeighbors(cell) {
+      const dirs = [[0,-1], [1,0], [0,1], [-1,0]];
+      return dirs.map(([dx, dy], i) => {
+        let nx = cell.x + dx;
+        let ny = cell.y + dy;
+        let ni = index(nx, ny);
+        return ni >= 0 && !grid[ni].visited ? { i, cell: grid[ni] } : null;
+      }).filter(n => n);
+    }
+
+    function removeWalls(a, b, direction) {
+      a.walls[direction] = false;
+      b.walls[(direction + 2) % 4] = false;
+    }
+
+    function generateMazeStep() {
+      current.visited = true;
+      let neighbors = getNeighbors(current);
+      if (neighbors.length > 0) {
+        let { i, cell: next } = neighbors[Math.floor(Math.random() * neighbors.length)];
+        stack.push(current);
+        removeWalls(current, next, i);
+        current = next;
+      } else if (stack.length > 0) {
+        current = stack.pop();
+      } else {
+        generating = false;
+        setTimeout(() => {
+          exitCell = findFurthestCell();
+          drawExit();
+          drawPlayer();
+        }, 100);
+      }
+    }
+
+    function drawGrid() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      grid.forEach(c => c.draw());
+    }
+
+    function animateMaze() {
+      if (generating) {
+        for (let i = 0; i < 5; i++) generateMazeStep();
+        drawGrid();
+        requestAnimationFrame(animateMaze);
+      }
+    }
+
+    function findFurthestCell() {
+      let visited = Array(grid.length).fill(false);
+      let queue = [{ x: 0, y: 0, dist: 0 }];
+      let farthest = queue[0];
+      while (queue.length > 0) {
+        let { x, y, dist } = queue.shift();
+        let cell = grid[index(x, y)];
+        if (!cell || visited[index(x, y)]) continue;
+        visited[index(x, y)] = true;
+        if (dist > farthest.dist) farthest = { x, y, dist };
+        let directions = [[0,-1],[1,0],[0,1],[-1,0]];
+        directions.forEach(([dx,dy], i) => {
+          if (!cell.walls[i]) queue.push({ x:x+dx, y:y+dy, dist: dist+1 });
+        });
+      }
+      return farthest;
+    }
+
+    function drawExit() {
+      if (!exitCell) return;
+      ctx.font = `${cellSize / 2}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'red';
+      ctx.fillText('❌', exitCell.x * cellSize + cellSize / 2, exitCell.y * cellSize + cellSize / 2);
+    }
+
+    function drawPlayer() {
+      ctx.fillStyle = '#0f0';
+      ctx.beginPath();
+      ctx.arc(player.px, player.py, cellSize / 3, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+
+    function updatePlayerSmooth() {
+      player.px += (player.x * cellSize + cellSize / 2 - player.px) * 0.2;
+      player.py += (player.y * cellSize + cellSize / 2 - player.py) * 0.2;
+      drawGrid();
+      drawExit();
+      drawPlayer();
+      if (exitCell && Math.abs(player.px - (exitCell.x * cellSize + cellSize / 2)) < 3 &&
+          Math.abs(player.py - (exitCell.y * cellSize + cellSize / 2)) < 3) {
+        setTimeout(() => resetMaze(), 300);
+      }
+      requestAnimationFrame(updatePlayerSmooth);
+    }
+
+    function move(dir) {
+      if (generating) return;
+
+      const dirMap = { w: [0, -1], d: [1, 0], s: [0, 1], a: [-1, 0] };
+      const idx = { w: 0, d: 1, s: 2, a: 3 };
+
+      if (!dirMap[dir]) {
+        console.error("Invalid direction:", dir);
+        return;
+      }
+
+      let [dx, dy] = dirMap[dir];
+      let cell = grid[index(player.x, player.y)];
+
+      if (cell && !cell.walls[idx[dir]]) {
+        player.x += dx;
+        player.y += dy;
+      }
+    }
+
+    document.addEventListener('keydown', e => move(e.key.toLowerCase()));
+
+    function startMaze(isReset = false) {
+      if (!isReset) {
+        cols = parseInt(document.getElementById('widthSlider').value, 10);
+        rows = parseInt(document.getElementById('heightSlider').value, 10);
+        resizeCanvasToFit(cols, rows);
+      }
+
+      if (isNaN(cols) || isNaN(rows) || cols <= 0 || rows <= 0) {
+        alert("Invalid maze size! Please enter valid numbers.");
+        return;
+      }
+
+      resizeCanvasToFit(cols, rows);
+
+      grid = [];
+      for (let y = 0; y < rows; y++)
+        for (let x = 0; x < cols; x++)
+          grid.push(new Cell(x, y));
+
+      current = grid[0];
+      stack = [];
+      generating = true;
+      player = { x: 0, y: 0, px: cellSize / 2, py: cellSize / 2 };
+      exitCell = null;
+
+      document.getElementById('setup').style.display = 'none';
+      document.getElementById('maze-container').style.display = 'block';
+      document.getElementById('controls').style.display = 'block';
+      document.getElementById('reset').style.display = 'block';
+
+      if (document.getElementById('animate').value === 'true') {
+        animateMaze();
+      } else {
+        while (generating) generateMazeStep();
+        drawGrid();
+        drawExit();
+        drawPlayer();
+      }
+
+      requestAnimationFrame(updatePlayerSmooth);
+    }
+
+    function resetMaze() {
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+      generating = false;
+  
+      lastValidCellSize = cellSize;
+  
+      player = {
+        x: 0, 
+        y: 0,
+        px: lastValidCellSize/2,
+        py: lastValidCellSize/2
+      };
+  
+      drawGrid();
+      drawExit();
+      drawPlayer();
+  
+      startMaze(true);
+    }
+
+
+    function showSetup() {
+      document.getElementById('setup').style.display = 'flex';
+      document.getElementById('maze-container').style.display = 'none';
+      document.getElementById('controls').style.display = 'none';
+      document.getElementById('reset').style.display = 'none';
+      document.getElementById('theme-menu').style.display = 'none';
+  
+      generating = false;
+      grid = [];
+      stack = [];
+    }
+
+    function toggleMenu() {
+      const themeMenu = document.getElementById('theme-menu');
+      themeMenu.style.display = themeMenu.style.display === 'none' ? 'flex' : 'none';
+    }
+
+    function setTheme(theme) {
+      switch (theme) {
+        case 'dark':
+          document.documentElement.style.setProperty('--bg-color', '#1e1e2f');
+          document.documentElement.style.setProperty('--text-color', '#fff');
+          break;
+        case 'light':
+          document.documentElement.style.setProperty('--bg-color', '#f9f9f9');
+          document.documentElement.style.setProperty('--text-color', '#333');
+          break;
+        case 'matrix':
+          document.documentElement.style.setProperty('--bg-color', 'black');
+          document.documentElement.style.setProperty('--text-color', 'green');
+          break;
+        default:
+          break;
+      }
+    }
+
+    document.getElementById('widthSlider').addEventListener('input', function() {
+      document.getElementById('widthValue').textContent = this.value;
+    });
+    document.getElementById('heightSlider').addEventListener('input', function() {
+      document.getElementById('heightValue').textContent = this.value;
+    });
+  </script>
+</body>
+</html>
